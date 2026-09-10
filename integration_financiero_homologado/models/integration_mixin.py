@@ -811,13 +811,13 @@ class IntegrationMixin(models.AbstractModel):
             or getattr(product, "lst_price_usd", False)
             or (default_price if (default_price is not None and default_price > 0) else False)
             or product_list_price
-            or 0.0
+            or 1.0
         )
         product_standard_price_usd = (
             getattr(product, "standard_price_usd", False)
             or getattr(product, "cost_usd", False)
             or product_standard_price
-            or 0.0
+            or 1.0
         )
 
         vals = {
