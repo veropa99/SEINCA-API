@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_order_form_inherit_integration" model="ir.ui.view">
+        <field name="name">sale.order.form.inherit.integration</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <!-- Insertar botón en el header -->
+            <xpath expr="//form/header" position="inside">
+                <button name="action_send_to_homologado"
+                        string="Enviar Pedido"
+                        class="btn-primary"
+                        type="object"
+                        invisible="not homologado_id"
+                        help="Envía este pedido a la base de datos destino. El botón desaparece una vez enviado."/>
+            </xpath>
+
+            <!-- Campos después de payment_term_id -->
+            <xpath expr="//field[@name='payment_term_id']" position="after">
+                <field name="homologado_id" readonly="1" string="ID Pedido Destino"/>
+                <field name="homologado_invoice_id" readonly="1" string="ID Factura Destino"/>
+            </xpath>
+
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_inherit_homologado" model="ir.ui.view">
+        <field name="name">res.config.settings.form.inherit.homologado</field>
+        <field name="model">res.config.settings</field>
+        <!-- Ojo: en 17 el padre más estable es base_setup -->
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+
+            <!-- En Odoo 17 es más seguro engancharse al form -->
+            <xpath expr="//form" position="inside">
+
+                <app string="Homologado" name="homologado_integration">
+                    <block title="Integración BD Destino (Homologado)">
+
+                        <setting string="URL Odoo Homologado">
+                            <field name="homologado_db_url"
+                                   placeholder="https://odoo-homologado.midominio.com"/>
+                            <div class="text-muted">
+                                URL completa donde corre el Odoo destino.
+                            </div>
+                        </setting>
+
+                        <setting string="Nombre BD Homologada">
+                            <field name="homologado_db_name"
+                                   placeholder="nombre_db_homologada"/>
+                            <div class="text-muted">
+                                Nombre exacto de la base de datos destino.
+                            </div>
+                        </setting>
+
+                        <setting string="Usuario API Homologado">
+                            <field name="homologado_db_user"
+                                   placeholder="api-user@tuempresa.com"/>
+                            <div class="text-muted">
+                                Login del usuario API en la BD homologada.
+                            </div>
+                        </setting>
+
+                        <setting string="Password API Homologado">
+                            <field name="homologado_db_password" password="True"/>
+                            <div class="text-muted">
+                                Contraseña del usuario API.
+                            </div>
+                        </setting>
+
+                        <setting string="Usuario Fijo para Documentos">
+                            <field name="homologado_db_fixed_user_login"
+                                   placeholder="vendedor.destino@tuempresa.com"/>
+                            <div class="text-muted">
+                                Login del usuario remoto que se usará para crear ventas/compras en destino. Si no se define, se usará el Usuario API Homologado.
+                            </div>
+                        </setting>
+
+                    </block>
+                </app>
+
+            </xpath>
+        </field>
+    </record>
+</odoo>
