@@ -55,8 +55,19 @@ class PurchaseOrder(models.Model):
         order_lines = []
         for line in self.order_line:
             # ✅ AHORA: busca y si no existe, crea producto remoto
+            line_price_usd = (
+                line.price_unit
+                if self.currency_id.name == 'USD'
+                else getattr(line, 'ref_unit', False) or line.price_unit
+            )
             product_id_remoto = self._get_or_create_remote_product(
-                models_proxy, db, uid, password, line.product_id
+                models_proxy,
+                db,
+                uid,
+                password,
+                line.product_id,
+                line_uom=getattr(line, 'product_uom', None),
+                default_price=line_price_usd,
             )
 
             # ✅ ACTUALIZADA: Sincronizar precio USD original en ref_unit

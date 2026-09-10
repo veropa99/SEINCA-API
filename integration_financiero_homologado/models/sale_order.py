@@ -78,8 +78,19 @@ class SaleOrder(models.Model):
         for line in self.order_line.filtered(lambda l: not l.display_type):
             # Busca y si no existe, crea producto remoto. Pasamos la UoM de la línea
             # para que el template remoto use esa unidad si es necesario.
+            line_price_usd = (
+                line.price_unit
+                if self.currency_id.name == 'USD'
+                else getattr(line, 'ref_unit', False) or line.price_unit
+            )
             product_id_remoto = self._get_or_create_remote_product(
-                models_proxy, db, uid, password, line.product_id, line.product_uom
+                models_proxy,
+                db,
+                uid,
+                password,
+                line.product_id,
+                line.product_uom,
+                default_price=line_price_usd,
             )
             # Asegurar la UoM remota para la línea y enviarla
             uom_remote_id = False

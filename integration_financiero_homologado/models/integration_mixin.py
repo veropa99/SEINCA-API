@@ -558,6 +558,13 @@ class IntegrationMixin(models.AbstractModel):
         # Forzar recarga de la vista para re-evaluar attrs/invisible del botón
         return {"type": "ir.actions.client", "tag": "reload"}
 
+    def _remote_fields_info(self, models_proxy, db, uid, password, model_name, attributes=None):
+        """Devuelve dict con la información de campos existentes en el modelo remoto."""
+        attrs = attributes or ["type", "required", "selection"]
+        return models_proxy.execute_kw(
+            db, uid, password, model_name, "fields_get", [], {"attributes": attrs}
+        )
+
     def _remote_fields(self, models_proxy, db, uid, password, model_name):
         """Devuelve set de campos existentes en el modelo remoto."""
         info = models_proxy.execute_kw(
@@ -679,19 +686,23 @@ class IntegrationMixin(models.AbstractModel):
                 % (uom.name, str(e))
             )
 
-    def _get_or_create_remote_product(self, models_proxy, db, uid, password, product, line_uom=None):
+    def _get_or_create_remote_product(
+        self, models_proxy, db, uid, password, product, line_uom=None, default_price=None
+    ):
         """
         Busca producto remoto por default_code o barcode (o name).
-        Si no existe, lo crea con campos permitidos.
+        Si no existe, lo crea con campos permitidos y asegura campos obligatorios
+        (como list_price_usd y requeridos por localizaciones/personalizaciones).
         Omite campos que no existan en destino.
         """
         if not product:
             raise UserError(_("No se proporcionó un producto."))
 
         remote_model = "product.product"
-        remote_fields = self._remote_fields(
+        remote_fields_info = self._remote_fields_info(
             models_proxy, db, uid, password, remote_model
         )
+        remote_fields = set(remote_fields_info.keys())
 
         name = product.name or product.display_name
         code = product.default_code or False
@@ -791,6 +802,24 @@ class IntegrationMixin(models.AbstractModel):
             models_proxy, db, uid, password, product.uom_po_id
         )
 
+        # Precios base y USD (crucial para entornos bimonetarios o localizaciones con list_price_usd)
+        product_list_price = getattr(product, "list_price", 0.0) or 0.0
+        product_standard_price = getattr(product, "standard_price", 0.0) or 0.0
+
+        product_list_price_usd = (
+            getattr(product, "list_price_usd", False)
+            or getattr(product, "lst_price_usd", False)
+            or (default_price if (default_price is not None and default_price > 0) else False)
+            or product_list_price
+            or 0.0
+        )
+        product_standard_price_usd = (
+            getattr(product, "standard_price_usd", False)
+            or getattr(product, "cost_usd", False)
+            or product_standard_price
+            or 0.0
+        )
+
         vals = {
             "detailed_type": getattr(product, "detailed_type", None),
             "name": name,
@@ -804,7 +833,36 @@ class IntegrationMixin(models.AbstractModel):
             "purchase_ok": product.purchase_ok,
             "uom_id": uom_remote_id,
             "uom_po_id": uom_po_remote_id,
+            "list_price": product_list_price,
+            "standard_price": product_standard_price,
+            "list_price_usd": product_list_price_usd,
+            "standard_price_usd": product_standard_price_usd,
         }
+
+        # Asegurar valores para campos marcados como obligatorios (required=True) en el modelo remoto
+        for fname, finfo in remote_fields_info.items():
+            if finfo.get("required") and (fname not in vals or vals[fname] is None or vals[fname] is False):
+                # 1. Intentar tomar del producto local si existe
+                if hasattr(product, fname):
+                    local_val = getattr(product, fname)
+                    if local_val is not None and local_val is not False:
+                        vals[fname] = local_val
+                        continue
+                # 2. Asignación según el campo o tipo de dato
+                if fname == "list_price_usd":
+                    vals[fname] = product_list_price_usd
+                elif fname == "standard_price_usd":
+                    vals[fname] = product_standard_price_usd
+                elif finfo.get("type") in ("float", "monetary"):
+                    vals[fname] = 0.0
+                elif finfo.get("type") == "integer":
+                    vals[fname] = 0
+                elif finfo.get("type") in ("char", "text"):
+                    vals[fname] = name or "-"
+                elif finfo.get("type") == "boolean":
+                    vals[fname] = False
+                elif finfo.get("type") == "selection" and finfo.get("selection"):
+                    vals[fname] = finfo["selection"][0][0]
 
         vals = self._filter_remote_vals(vals, remote_fields)
 
@@ -812,7 +870,7 @@ class IntegrationMixin(models.AbstractModel):
             db, uid, password, remote_model, "create", [vals]
         )
         _logger.info("Producto creado en destino: %s (%s)", name, new_id)
-        # --- Sincronizar impuestos del template del producto ---
+        # --- Sincronizar impuestos y campos del template del producto ---
         try:
             # Obtener template local y sus impuestos
             local_tmpl = getattr(product, "product_tmpl_id", None) or product
@@ -860,6 +918,11 @@ class IntegrationMixin(models.AbstractModel):
                     write_vals["uom_id"] = uom_remote_id
                 if uom_po_remote_id and "uom_po_id" in template_remote_fields:
                     write_vals["uom_po_id"] = uom_po_remote_id
+
+                if "list_price_usd" in template_remote_fields and product_list_price_usd:
+                    write_vals["list_price_usd"] = product_list_price_usd
+                if "standard_price_usd" in template_remote_fields and product_standard_price_usd:
+                    write_vals["standard_price_usd"] = product_standard_price_usd
 
                 if write_vals:
                     try:
