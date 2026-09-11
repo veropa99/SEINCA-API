@@ -574,10 +574,13 @@ class IntegrationMixin(models.AbstractModel):
         return set(info.keys())
 
     def _filter_remote_vals(self, vals, remote_fields):
-        """Quita del dict los campos que no existen en remoto o que vienen None."""
+        """Quita del dict los campos que no existen en remoto, vengan None o sean recordsets de Odoo."""
         clean = {}
         for k, v in vals.items():
             if k in remote_fields and v is not None:
+                # Evitar enviar recordsets de Odoo que causan TypeError en XML-RPC
+                if isinstance(v, models.BaseModel):
+                    continue
                 clean[k] = v
         return clean
 
@@ -839,13 +842,31 @@ class IntegrationMixin(models.AbstractModel):
             "standard_price_usd": product_standard_price_usd,
         }
 
+        # Campos del sistema o relacionales que NUNCA deben forzarse en create de product.product
+        ignored_required = {
+            "product_tmpl_id",
+            "id",
+            "create_uid",
+            "write_uid",
+            "create_date",
+            "write_date",
+            "__last_update",
+            "display_name",
+            "company_id",
+        }
+
         # Asegurar valores para campos marcados como obligatorios (required=True) en el modelo remoto
         for fname, finfo in remote_fields_info.items():
+            if fname in ignored_required:
+                continue
+            if finfo.get("type") in ("many2one", "one2many", "many2many"):
+                # No forzar campos relacionales desconocidos; sus IDs locales no coinciden con remotos
+                continue
             if finfo.get("required") and (fname not in vals or vals[fname] is None or vals[fname] is False):
-                # 1. Intentar tomar del producto local si existe
+                # 1. Intentar tomar del producto local si existe y es un tipo primitivo
                 if hasattr(product, fname):
                     local_val = getattr(product, fname)
-                    if local_val is not None and local_val is not False:
+                    if not isinstance(local_val, models.BaseModel) and local_val is not None and local_val is not False:
                         vals[fname] = local_val
                         continue
                 # 2. Asignación según el campo o tipo de dato
