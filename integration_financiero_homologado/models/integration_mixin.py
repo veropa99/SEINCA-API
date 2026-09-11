@@ -823,7 +823,18 @@ class IntegrationMixin(models.AbstractModel):
             or 1.0
         )
 
-        vals = {
+
+        # --- 2b) CREAR via product.template (para que list_price_usd y otros campos del
+
+        #         template lleguen correctamente al ORM remoto, que los valida en ese nivel) ---
+
+        # Obtener campos del product.template remoto para filtrar correctamente
+        tmpl_remote_fields_info = self._remote_fields_info(
+            models_proxy, db, uid, password, "product.template"
+        )
+        tmpl_remote_fields = set(tmpl_remote_fields_info.keys())
+
+        tmpl_vals = {
             "detailed_type": getattr(product, "detailed_type", None),
             "name": name,
             "barcode": barcode,
@@ -842,55 +853,61 @@ class IntegrationMixin(models.AbstractModel):
             "standard_price_usd": product_standard_price_usd,
         }
 
-        # Campos del sistema o relacionales que NUNCA deben forzarse en create de product.product
+        # Campos del sistema / relacionales que NUNCA se fuerzan en create
         ignored_required = {
-            "product_tmpl_id",
-            "id",
-            "create_uid",
-            "write_uid",
-            "create_date",
-            "write_date",
-            "__last_update",
-            "display_name",
-            "company_id",
+            "product_tmpl_id", "id", "create_uid", "write_uid",
+            "create_date", "write_date", "__last_update", "display_name",
+            "company_id", "product_variant_ids", "product_variant_id",
+            "product_variant_count",
         }
 
-        # Asegurar valores para campos marcados como obligatorios (required=True) en el modelo remoto
-        for fname, finfo in remote_fields_info.items():
+        # Rellenar campos obligatorios en el template remoto con valores seguros
+        for fname, finfo in tmpl_remote_fields_info.items():
             if fname in ignored_required:
                 continue
             if finfo.get("type") in ("many2one", "one2many", "many2many"):
-                # No forzar campos relacionales desconocidos; sus IDs locales no coinciden con remotos
                 continue
-            if finfo.get("required") and (fname not in vals or vals[fname] is None or vals[fname] is False):
-                # 1. Intentar tomar del producto local si existe y es un tipo primitivo
+            if finfo.get("required") and (fname not in tmpl_vals or tmpl_vals[fname] is None or tmpl_vals[fname] is False):
                 if hasattr(product, fname):
                     local_val = getattr(product, fname)
                     if not isinstance(local_val, models.BaseModel) and local_val is not None and local_val is not False:
-                        vals[fname] = local_val
+                        tmpl_vals[fname] = local_val
                         continue
-                # 2. Asignación según el campo o tipo de dato
                 if fname == "list_price_usd":
-                    vals[fname] = product_list_price_usd
+                    tmpl_vals[fname] = product_list_price_usd
                 elif fname == "standard_price_usd":
-                    vals[fname] = product_standard_price_usd
+                    tmpl_vals[fname] = product_standard_price_usd
                 elif finfo.get("type") in ("float", "monetary"):
-                    vals[fname] = 0.0
+                    tmpl_vals[fname] = 0.0
                 elif finfo.get("type") == "integer":
-                    vals[fname] = 0
+                    tmpl_vals[fname] = 0
                 elif finfo.get("type") in ("char", "text"):
-                    vals[fname] = name or "-"
+                    tmpl_vals[fname] = name or "-"
                 elif finfo.get("type") == "boolean":
-                    vals[fname] = False
+                    tmpl_vals[fname] = False
                 elif finfo.get("type") == "selection" and finfo.get("selection"):
-                    vals[fname] = finfo["selection"][0][0]
+                    tmpl_vals[fname] = finfo["selection"][0][0]
 
-        vals = self._filter_remote_vals(vals, remote_fields)
+        tmpl_vals = self._filter_remote_vals(tmpl_vals, tmpl_remote_fields)
 
-        new_id = models_proxy.execute_kw(
-            db, uid, password, remote_model, "create", [vals]
+        # Crear el product.template en remoto
+        new_tmpl_id = models_proxy.execute_kw(
+            db, uid, password, "product.template", "create", [tmpl_vals]
         )
-        _logger.info("Producto creado en destino: %s (%s)", name, new_id)
+        _logger.info("Template creado en destino: %s (tmpl_id=%s)", name, new_tmpl_id)
+
+        # Obtener la variante product.product generada automáticamente
+        variants = models_proxy.execute_kw(
+            db, uid, password, "product.product", "search",
+            [[("product_tmpl_id", "=", new_tmpl_id)]], {"limit": 1}
+        )
+        new_id = variants[0] if variants else False
+        if not new_id:
+            raise UserError(_(
+                "No se encontró ninguna variante de producto para el template recién creado (tmpl_id=%s)."
+            ) % new_tmpl_id)
+
+        _logger.info("Variante producto obtenida: %s (%s)", name, new_id)
         # --- Sincronizar impuestos y campos del template del producto ---
         try:
             # Obtener template local y sus impuestos
