@@ -458,11 +458,19 @@ class IntegrationMixin(models.AbstractModel):
                     )
 
                 except Exception as e:
+                    # NO relanzar: el pedido de venta ya fue creado/confirmado en remoto.
                     msg = self._build_remote_error_message(
                         _("crear la factura borrador remota"), e
                     )
-                    self.message_post(body=msg)
-                    raise UserError(msg)
+                    _logger.error(
+                        "Error al crear factura borrador (SO remoto ID %s ya guardado): %s",
+                        new_remote_id, msg
+                    )
+                    self.message_post(body=_(
+                        "⚠️ El pedido fue enviado correctamente (ID Destino: %s), pero la factura "
+                        "borrador no pudo crearse automáticamente. Motivo: %s. "
+                        "Cree la factura manualmente en la BD destino."
+                    ) % (new_remote_id, msg))
 
             # ── Lógica para Compras (purchase.order) ─────────────────────────
             elif remote_model == "purchase.order":

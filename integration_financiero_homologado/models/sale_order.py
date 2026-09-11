@@ -37,7 +37,10 @@ class SaleOrder(models.Model):
             models_proxy, db, uid, password
         )
 
-        # Obtener campos remotos del modelo de línea para filtrar vals no soportados
+        # Obtener campos remotos de orden y línea para filtrar vals no soportados
+        order_remote_fields = self._remote_fields(
+            models_proxy, db, uid, password, 'sale.order'
+        )
         line_remote_fields = self._remote_fields(
             models_proxy, db, uid, password, 'sale.order.line'
         )
@@ -150,19 +153,20 @@ class SaleOrder(models.Model):
             'order_line': order_lines,
             'partner_id': partner_id_remoto,
             'user_id': user_id_remoto,
-            
-            # Identificador para la BD receptora
-            'from_integration_emisora': True,
         }
-        
+
+        # Identificador para la BD receptora (solo si el campo existe en destino)
+        if 'from_integration_emisora' in order_remote_fields:
+            return_vals['from_integration_emisora'] = True
+
         # Establecer la tarifa USD encontrada en la cabecera
         if pricelist_id_remoto:
             return_vals['pricelist_id'] = pricelist_id_remoto
 
         if payment_term_id_remoto:
             return_vals['payment_term_id'] = payment_term_id_remoto
-        
-        return return_vals
+
+        return self._filter_remote_vals(return_vals, order_remote_fields)
 
     def action_send_to_homologado(self):
         """Prepara los datos y llama al método genérico con las acciones de Venta."""
