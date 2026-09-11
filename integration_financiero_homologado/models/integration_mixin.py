@@ -727,9 +727,37 @@ class IntegrationMixin(models.AbstractModel):
             db, uid, password, remote_model, "search", [domain], {"limit": 1}
         )
         if ids:
+            # Asegurar que el producto existente tenga políticas de facturación correctas
+            try:
+                prod_info = models_proxy.execute_kw(
+                    db, uid, password, "product.product", "read",
+                    [[ids[0]], ["product_tmpl_id"]]
+                )
+                if prod_info:
+                    pt = prod_info[0].get("product_tmpl_id")
+                    tmpl_id = pt[0] if isinstance(pt, (list, tuple)) and pt else pt
+                    if tmpl_id:
+                        tmpl_fields = self._remote_fields(
+                            models_proxy, db, uid, password, "product.template"
+                        )
+                        policy_vals = {}
+                        if "purchase_method" in tmpl_fields:
+                            policy_vals["purchase_method"] = "purchase"
+                        if "invoice_policy" in tmpl_fields:
+                            policy_vals["invoice_policy"] = "order"
+                        if policy_vals:
+                            models_proxy.execute_kw(
+                                db, uid, password, "product.template", "write",
+                                [[tmpl_id], policy_vals]
+                            )
+            except Exception as e:
+                _logger.warning(
+                    "No se pudo actualizar política de facturación del producto remoto existente: %s", e
+                )
             return ids[0]
 
         # --- 2) CREAR ---
+
         # Helpers para M2O/M2M
         def find_remote_id(model, field, value):
             if not value:
@@ -851,6 +879,10 @@ class IntegrationMixin(models.AbstractModel):
             "standard_price": product_standard_price,
             "list_price_usd": product_list_price_usd,
             "standard_price_usd": product_standard_price_usd,
+            # Forzar política de facturación por pedido (no por cantidades recibidas)
+            # para que el producto sea facturable directamente en compras y ventas.
+            "purchase_method": "purchase",
+            "invoice_policy": "order",
         }
 
         # Campos del sistema / relacionales que NUNCA se fuerzan en create
