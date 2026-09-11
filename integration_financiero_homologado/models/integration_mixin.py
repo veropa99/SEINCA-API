@@ -528,6 +528,28 @@ class IntegrationMixin(models.AbstractModel):
                             % (self.name, max_retries)
                         )
 
+                    # Fijar invoice_date en el borrador para que Odoo calcule date_maturity
+                    # y no falle la restricción: "apunte en cuenta por pagar debe tener fecha límite"
+                    try:
+                        invoice_date_str = (
+                            self.date_approve.strftime("%Y-%m-%d")
+                            if getattr(self, "date_approve", None)
+                            else fields.Date.today().strftime("%Y-%m-%d")
+                        )
+                        models_proxy.execute_kw(
+                            db, uid, password, "account.move", "write",
+                            [[created_invoice_ids[0]], {"invoice_date": invoice_date_str}]
+                        )
+                        _logger.info(
+                            "invoice_date fijado en %s para factura remota ID %s",
+                            invoice_date_str, created_invoice_ids[0]
+                        )
+                    except Exception as date_err:
+                        _logger.warning(
+                            "No se pudo fijar invoice_date en la factura remota %s: %s",
+                            created_invoice_ids[0], date_err
+                        )
+
                     self.write(
                         {"homologado_invoice_id": created_invoice_ids[0]})
 
