@@ -95,9 +95,16 @@ class SaleOrder(models.Model):
                 line.product_uom,
                 default_price=line_price_usd,
             )
-            # Asegurar la UoM remota para la línea y enviarla
+            # Asegurar la UoM remota para la línea
+            # Si la UoM de la línea es la misma del producto, dejamos que Odoo remoto
+            # asigne automáticamente la UoM nativa del producto en destino (evita incompatibilidad
+            # de categorías entre idiomas distintos como Units vs Unidades).
+            is_same_uom = (
+                line.product_uom and line.product_id.uom_id
+                and line.product_uom.id == line.product_id.uom_id.id
+            )
             uom_remote_id = False
-            if getattr(line, 'product_uom', False):
+            if not is_same_uom and getattr(line, 'product_uom', False):
                 try:
                     uom_remote_id = self._get_or_create_remote_uom(
                         models_proxy, db, uid, password, line.product_uom

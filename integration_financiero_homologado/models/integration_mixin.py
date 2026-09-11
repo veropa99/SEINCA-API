@@ -678,8 +678,39 @@ class IntegrationMixin(models.AbstractModel):
                     # No lanzamos error aquí para permitir intentar crear la actual si fuera posible,
                     # aunque probablemente fallará más adelante.
 
-        # 1. Buscar UoM
-        domain = [("name", "=", uom.name)]
+        # Diccionarios de equivalencias multilenguaje (ES <-> EN)
+        UOM_SYNONYMS = {
+            "unidades": ["Units", "Unit", "Unidades", "Unidad"],
+            "unidad": ["Units", "Unit", "Unidades", "Unidad"],
+            "units": ["Units", "Unit", "Unidades", "Unidad"],
+            "unit": ["Units", "Unit", "Unidades", "Unidad"],
+            "docenas": ["Dozen(s)", "Dozens", "Docenas", "Docena"],
+            "docena": ["Dozen(s)", "Dozens", "Docenas", "Docena"],
+            "horas": ["Hours", "Horas", "Hour", "Hora"],
+            "hora": ["Hours", "Horas", "Hour", "Hora"],
+            "dias": ["Days", "Días", "Dias", "Day"],
+            "días": ["Days", "Días", "Dias", "Day"],
+            "kg": ["kg", "kg(s)", "Kilogramos", "Kilogramo"],
+            "g": ["g", "Gramos", "Gramo"],
+            "m": ["m", "Metros", "Metro"],
+        }
+        CAT_SYNONYMS = {
+            "unidad": ["Unit", "Unidad"],
+            "unit": ["Unit", "Unidad"],
+            "tiempo": ["Working Time", "Time", "Tiempo"],
+            "working time": ["Working Time", "Time", "Tiempo"],
+            "time": ["Working Time", "Time", "Tiempo"],
+            "peso": ["Weight", "Peso"],
+            "weight": ["Weight", "Peso"],
+            "volumen": ["Volume", "Volumen"],
+            "volume": ["Volume", "Volumen"],
+            "distancia": ["Length / Distance", "Longitud / Distancia", "Distancia"],
+            "longitud": ["Length / Distance", "Longitud / Distancia", "Distancia"],
+        }
+
+        # 1. Buscar UoM (por nombre o equivalencias conocidas)
+        search_names = UOM_SYNONYMS.get(uom.name.strip().lower(), [uom.name])
+        domain = [("name", "in", search_names)]
         ids = models_proxy.execute_kw(
             db, uid, password, "uom.uom", "search", [domain], {"limit": 1}
         )
@@ -693,7 +724,10 @@ class IntegrationMixin(models.AbstractModel):
             # 2. Buscar o Crear Categoría de UoM
             cat_remote_id = False
             if uom.category_id:
-                cat_domain = [("name", "=", uom.category_id.name)]
+                cat_names = CAT_SYNONYMS.get(
+                    uom.category_id.name.strip().lower(), [uom.category_id.name]
+                )
+                cat_domain = [("name", "in", cat_names)]
                 cat_ids = models_proxy.execute_kw(
                     db,
                     uid,
