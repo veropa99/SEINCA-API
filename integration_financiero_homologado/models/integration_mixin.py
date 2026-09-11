@@ -358,13 +358,13 @@ class IntegrationMixin(models.AbstractModel):
 
         # --- PASO 3: Crear la factura borrador ---
         if invoice_method:
-            try:
-                _logger.info(
-                    "Iniciando creación de factura remota para ID %s", new_remote_id
-                )
+            _logger.info(
+                "Iniciando creación de factura remota para ID %s", new_remote_id
+            )
 
-                # Lógica para Ventas (sale.order)
-                if remote_model == "sale.order":
+            # ── Lógica para Ventas (sale.order) ──────────────────────────────
+            if remote_model == "sale.order":
+                try:
                     context = {
                         "active_model": "sale.order",
                         "active_ids": [new_remote_id],
@@ -380,9 +380,6 @@ class IntegrationMixin(models.AbstractModel):
                         {"context": context},
                     )
 
-                    # ✅ CORRECCIÓN: Llamada directa. Ya no se espera un error 'Fault'.
-                    # Esta llamada devolverá 'None' (o una acción) y no fallará gracias a 'allow_none=True'.
-                    # ✅ CORRECCIÓN: Llamada protegida contra 'cannot marshal None'
                     try:
                         models_proxy.execute_kw(
                             db,
@@ -402,7 +399,6 @@ class IntegrationMixin(models.AbstractModel):
                         else:
                             raise e
 
-                    # ✅ PRO-TIP: Búsqueda robusta con reintentos para evitar 'race conditions'
                     invoice_ids = []
                     search_domain = [
                         [
@@ -430,14 +426,11 @@ class IntegrationMixin(models.AbstractModel):
                             _logger.info(
                                 f"¡Factura remota encontrada! ID: {invoice_ids[0]}"
                             )
-                            break  # ¡Encontrada! Salir del bucle.
+                            break
 
                         if attempt < max_retries - 1:
-                            time.sleep(
-                                retry_delay_seconds
-                            )  # Esperar antes de reintentar
+                            time.sleep(retry_delay_seconds)
 
-                    # Comprobación final después de todos los reintentos
                     if not invoice_ids:
                         raise UserError(
                             _(
@@ -448,7 +441,6 @@ class IntegrationMixin(models.AbstractModel):
 
                     self.write({"homologado_invoice_id": invoice_ids[0]})
 
-                    # ✅ NUEVA FUNCIONALIDAD: Replicar cuentas contables de la factura
                     self._replicate_invoice_accounts(
                         models_proxy,
                         db,
@@ -465,10 +457,38 @@ class IntegrationMixin(models.AbstractModel):
                         % invoice_ids[0]
                     )
 
-                # Lógica para Compras (purchase.order)
-                elif remote_model == "purchase.order":
-                    # PASO 3a: Ejecutar el método de creación de factura (ej. 'action_create_invoice')
-                    # PASO 3a: Ejecutar el método de creación de factura (ej. 'action_create_invoice')
+                except Exception as e:
+                    msg = self._build_remote_error_message(
+                        _("crear la factura borrador remota"), e
+                    )
+                    self.message_post(body=msg)
+                    raise UserError(msg)
+
+            # ── Lógica para Compras (purchase.order) ─────────────────────────
+            elif remote_model == "purchase.order":
+
+                # ⚠️ Este try/except NO relanza. El pedido ya fue creado/confirmado
+                # en remoto y homologado_id fue guardado. Si la factura falla, sólo
+                # se registra un aviso en el chatter para evitar rollback y duplicados.
+                try:
+                    # PASO 3a: Limpiar payment_term en el PO remoto ANTES de invoicear.
+                    # Sin payment_term, action_create_invoice no genera apuntes de cuentas
+                    # por pagar sin date_maturity (que viola la restricción contable de Odoo).
+                    try:
+                        models_proxy.execute_kw(
+                            db, uid, password, "purchase.order", "write",
+                            [[new_remote_id], {"payment_term_id": False}]
+                        )
+                        _logger.info(
+                            "payment_term_id limpiado en PO remoto %s antes de invoicear.",
+                            new_remote_id
+                        )
+                    except Exception as pt_err:
+                        _logger.warning(
+                            "No se pudo limpiar payment_term_id en PO remoto: %s", pt_err
+                        )
+
+                    # PASO 3b: Ejecutar la creación de la factura borrador
                     try:
                         models_proxy.execute_kw(
                             db,
@@ -488,7 +508,7 @@ class IntegrationMixin(models.AbstractModel):
                         else:
                             raise e
 
-                    # PASO 3b: Búsqueda robusta (igual que en ventas, pero con 'in_invoice')
+                    # PASO 3c: Búsqueda robusta de la factura creada
                     created_invoice_ids = []
                     search_domain = [
                         [
@@ -528,8 +548,7 @@ class IntegrationMixin(models.AbstractModel):
                             % (self.name, max_retries)
                         )
 
-                    # Fijar invoice_date en el borrador para que Odoo calcule date_maturity
-                    # y no falle la restricción: "apunte en cuenta por pagar debe tener fecha límite"
+                    # PASO 3d: Fijar invoice_date para que Odoo calcule date_maturity
                     try:
                         invoice_date_str = (
                             self.date_approve.strftime("%Y-%m-%d")
@@ -550,10 +569,8 @@ class IntegrationMixin(models.AbstractModel):
                             created_invoice_ids[0], date_err
                         )
 
-                    self.write(
-                        {"homologado_invoice_id": created_invoice_ids[0]})
+                    self.write({"homologado_invoice_id": created_invoice_ids[0]})
 
-                    # ✅ NUEVA FUNCIONALIDAD: Replicar cuentas contables de la factura
                     self._replicate_invoice_accounts(
                         models_proxy,
                         db,
@@ -570,12 +587,21 @@ class IntegrationMixin(models.AbstractModel):
                         % created_invoice_ids[0]
                     )
 
-            except Exception as e:
-                msg = self._build_remote_error_message(
-                    _("crear la factura borrador remota"), e
-                )
-                self.message_post(body=msg)
-                raise UserError(msg)
+                except Exception as e:
+                    # NO relanzar: el pedido ya fue creado/confirmado en remoto.
+                    msg = self._build_remote_error_message(
+                        _("crear la factura borrador remota"), e
+                    )
+                    _logger.error(
+                        "Error al crear factura borrador (PO remoto ID %s ya guardado): %s",
+                        new_remote_id, msg
+                    )
+                    self.message_post(body=_(
+                        "⚠️ El pedido fue enviado correctamente (ID Destino: %s), pero la factura "
+                        "borrador no pudo crearse automáticamente. Motivo: %s. "
+                        "Cree la factura manualmente en la BD destino."
+                    ) % (new_remote_id, msg))
+
 
         # Forzar recarga de la vista para re-evaluar attrs/invisible del botón
         return {"type": "ir.actions.client", "tag": "reload"}
