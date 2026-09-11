@@ -441,16 +441,6 @@ class IntegrationMixin(models.AbstractModel):
 
                     self.write({"homologado_invoice_id": invoice_ids[0]})
 
-                    # Sincronizar fecha y tasa de cambio en la factura borrador remota
-                    self._sync_remote_invoice_rate_and_date(
-                        models_proxy,
-                        db,
-                        uid,
-                        password,
-                        invoice_ids[0],
-                        invoice_type="out_invoice",
-                    )
-
                     self._replicate_invoice_accounts(
                         models_proxy,
                         db,
@@ -566,17 +556,28 @@ class IntegrationMixin(models.AbstractModel):
                             % (self.name, max_retries)
                         )
 
-                    self.write({"homologado_invoice_id": created_invoice_ids[0]})
+                    # PASO 3d: Fijar invoice_date para que Odoo calcule date_maturity
+                    try:
+                        invoice_date_str = (
+                            self.date_approve.strftime("%Y-%m-%d")
+                            if getattr(self, "date_approve", None)
+                            else fields.Date.today().strftime("%Y-%m-%d")
+                        )
+                        models_proxy.execute_kw(
+                            db, uid, password, "account.move", "write",
+                            [[created_invoice_ids[0]], {"invoice_date": invoice_date_str}]
+                        )
+                        _logger.info(
+                            "invoice_date fijado en %s para factura remota ID %s",
+                            invoice_date_str, created_invoice_ids[0]
+                        )
+                    except Exception as date_err:
+                        _logger.warning(
+                            "No se pudo fijar invoice_date en la factura remota %s: %s",
+                            created_invoice_ids[0], date_err
+                        )
 
-                    # PASO 3d: Sincronizar fecha y tasa de cambio en la factura borrador remota
-                    self._sync_remote_invoice_rate_and_date(
-                        models_proxy,
-                        db,
-                        uid,
-                        password,
-                        created_invoice_ids[0],
-                        invoice_type="in_invoice",
-                    )
+                    self.write({"homologado_invoice_id": created_invoice_ids[0]})
 
                     self._replicate_invoice_accounts(
                         models_proxy,
@@ -2123,142 +2124,6 @@ class IntegrationMixin(models.AbstractModel):
             "✅ Validación completada: Todas las cuentas analíticas existen en BD destino."
         )
         return True
-
-    def _sync_remote_invoice_rate_and_date(
-        self, models_proxy, db, uid, password, remote_invoice_id, invoice_type="out_invoice"
-    ):
-        """
-        Sincroniza la fecha (invoice_date) y la tasa de cambio en la factura borrador remota.
-        1. Determina la fecha de la factura según el documento origen (date_order o date_approve o today).
-        2. Identifica la moneda remota y busca la tasa activa en la BD homologada (res.currency.rate).
-        3. Escribe en account.move remoto la invoice_date y los campos de tasa soportados
-           (tax_today, custom_rate, os_currency_rate, currency_rate, tasa_cambio, etc.).
-        """
-        if not remote_invoice_id:
-            return
-
-        try:
-            # 1. Determinar fecha de factura
-            date_val = getattr(self, "date_approve", None) or getattr(self, "date_order", None)
-            if date_val and hasattr(date_val, "strftime"):
-                invoice_date_str = date_val.strftime("%Y-%m-%d")
-            else:
-                invoice_date_str = fields.Date.today().strftime("%Y-%m-%d")
-
-            # 2. Leer moneda de la factura remota
-            inv_info = models_proxy.execute_kw(
-                db, uid, password, "account.move", "read",
-                [[remote_invoice_id], ["currency_id", "company_id"]], {}
-            )
-            remote_currency_id = False
-            remote_currency_name = ""
-            if inv_info:
-                curr_val = inv_info[0].get("currency_id")
-                if isinstance(curr_val, (list, tuple)) and curr_val:
-                    remote_currency_id = curr_val[0]
-                    remote_currency_name = curr_val[1] if len(curr_val) > 1 else ""
-                elif curr_val:
-                    remote_currency_id = curr_val
-
-            # Si el documento origen está en USD, asegurar búsqueda con la moneda USD
-            if getattr(self, "currency_id", None) and self.currency_id.name == "USD":
-                if not remote_currency_id or remote_currency_name != "USD":
-                    try:
-                        usd_ids = models_proxy.execute_kw(
-                            db, uid, password, "res.currency", "search",
-                            [[("name", "=", "USD")]], {"limit": 1}
-                        )
-                        if usd_ids:
-                            remote_currency_id = usd_ids[0]
-                            remote_currency_name = "USD"
-                    except Exception as curr_err:
-                        _logger.warning("No se pudo buscar moneda USD remota: %s", curr_err)
-
-            # 3. Consultar tasa en res.currency.rate remota para esa moneda y fecha
-            remote_direct_rate = False
-            if remote_currency_id:
-                try:
-                    rate_domain = [
-                        ("currency_id", "=", remote_currency_id),
-                        ("name", "<=", invoice_date_str),
-                    ]
-                    rate_ids = models_proxy.execute_kw(
-                        db, uid, password, "res.currency.rate", "search",
-                        [rate_domain], {"order": "name desc, id desc", "limit": 1}
-                    )
-                    if not rate_ids:
-                        rate_ids = models_proxy.execute_kw(
-                            db, uid, password, "res.currency.rate", "search",
-                            [[("currency_id", "=", remote_currency_id)]],
-                            {"order": "name desc, id desc", "limit": 1}
-                        )
-
-                    if rate_ids:
-                        rate_records = models_proxy.execute_kw(
-                            db, uid, password, "res.currency.rate", "read",
-                            [rate_ids, ["rate", "name"]], {}
-                        )
-                        if rate_records:
-                            raw_rate = rate_records[0].get("rate")
-                            if raw_rate and raw_rate > 0:
-                                remote_direct_rate = round(1.0 / raw_rate, 4) if raw_rate < 1.0 else round(raw_rate, 4)
-                                _logger.info(
-                                    "✅ Tasa remota obtenida para moneda %s: raw=%s, directa=%s (fecha %s)",
-                                    remote_currency_name, raw_rate, remote_direct_rate, rate_records[0].get("name")
-                                )
-                except Exception as rate_err:
-                    _logger.warning("Error consultando res.currency.rate en destino: %s", rate_err)
-
-            # 4. Inspeccionar campos disponibles en account.move remoto
-            move_fields_info = self._remote_fields_info(
-                models_proxy, db, uid, password, "account.move"
-            )
-            move_fields = set(move_fields_info.keys())
-
-            write_vals = {}
-            if "invoice_date" in move_fields:
-                write_vals["invoice_date"] = invoice_date_str
-            if "date" in move_fields:
-                write_vals["date"] = invoice_date_str
-
-            if remote_currency_id and remote_currency_name == "USD" and "currency_id" in move_fields:
-                write_vals["currency_id"] = remote_currency_id
-
-            if remote_direct_rate:
-                if "tax_today" in move_fields:
-                    write_vals["tax_today"] = remote_direct_rate
-
-                if "custom_rate" in move_fields:
-                    f_type = move_fields_info.get("custom_rate", {}).get("type")
-                    if f_type in ("float", "monetary"):
-                        write_vals["custom_rate"] = remote_direct_rate
-                    elif f_type == "boolean":
-                        write_vals["custom_rate"] = True
-
-                if "os_currency_rate" in move_fields:
-                    write_vals["os_currency_rate"] = remote_direct_rate
-
-                if "currency_rate" in move_fields:
-                    f_type = move_fields_info.get("currency_rate", {}).get("type")
-                    if f_type in ("float", "monetary"):
-                        write_vals["currency_rate"] = remote_direct_rate
-
-                for fname in ("tasa_cambio", "tasa_bcv", "rate_bcv"):
-                    if fname in move_fields:
-                        write_vals[fname] = remote_direct_rate
-
-            if write_vals:
-                models_proxy.execute_kw(
-                    db, uid, password, "account.move", "write",
-                    [[remote_invoice_id], write_vals]
-                )
-                _logger.info(
-                    "✅ Fecha (%s) y tasa (%s) aplicadas a la factura remota ID %s: %s",
-                    invoice_date_str, remote_direct_rate, remote_invoice_id, write_vals
-                )
-
-        except Exception as e:
-            _logger.warning("No se pudo sincronizar fecha/tasa en factura remota %s: %s", remote_invoice_id, e)
 
     def _replicate_invoice_accounts(
         self, models_proxy, db, uid, password, remote_invoice_id, invoice_type="out_invoice"
