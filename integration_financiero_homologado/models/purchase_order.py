@@ -73,7 +73,7 @@ class PurchaseOrder(models.Model):
             # ✅ ACTUALIZADA: Sincronizar precio USD original en ref_unit
             # Si currency_id es USD:
             #   - ref_unit = price_unit (USD original, para cálculo posterior en destino)
-            #   - price_unit = price_unit_bs (precio en bolívares con tasa actual)
+            #   - price_unit = price_unit_bs si existe, si no se usa price_unit directamente
             # Si no es USD: comportamiento normal (sin ref_unit)
             line_vals = {
                 'product_id': product_id_remoto,
@@ -81,15 +81,17 @@ class PurchaseOrder(models.Model):
                 'product_qty': line.product_qty,
                 'date_planned': line.date_planned.strftime('%Y-%m-%d %H:%M:%S') if line.date_planned else False,
             }
-            
+
             if self.currency_id.name == 'USD':
                 # Enviar precio original en USD en ref_unit
                 line_vals['ref_unit'] = line.price_unit
-                # Enviar precio en bolívares como price_unit
-                line_vals['price_unit'] = line.price_unit_bs
+                # Usar price_unit_bs si existe, si no usar price_unit como fallback
+                price_unit_bs = getattr(line, 'price_unit_bs', None)
+                line_vals['price_unit'] = price_unit_bs if price_unit_bs is not None else line.price_unit
             else:
                 # Comportamiento normal para otras monedas
                 line_vals['price_unit'] = line.price_unit
+
 
             # Mapear impuestos de la línea hacia IDs remotos (específico para compras)
             try:
