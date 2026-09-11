@@ -173,6 +173,18 @@ class SaleOrder(models.Model):
         if payment_term_id_remoto:
             return_vals['payment_term_id'] = payment_term_id_remoto
 
+        # Asegurar moneda remota si el pedido es en USD
+        if self.currency_id.name == 'USD' and 'currency_id' in order_remote_fields:
+            try:
+                curr_ids = models_proxy.execute_kw(
+                    db, uid, password, 'res.currency', 'search',
+                    [[('name', '=', 'USD')]], {'limit': 1}
+                )
+                if curr_ids:
+                    return_vals['currency_id'] = curr_ids[0]
+            except Exception as e:
+                _logger.warning("Error buscando moneda USD remota: %s", e)
+
         return self._filter_remote_vals(return_vals, order_remote_fields)
 
     def action_send_to_homologado(self):

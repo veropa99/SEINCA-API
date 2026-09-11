@@ -34,10 +34,27 @@ class PurchaseOrder(models.Model):
             models_proxy, db, uid, password
         )
 
-        # Obtener campos remotos del modelo de línea para filtrar vals no soportados
+        # Obtener campos remotos de orden y línea para filtrar vals no soportados
+        order_remote_fields = self._remote_fields(
+            models_proxy, db, uid, password, 'purchase.order'
+        )
         line_remote_fields = self._remote_fields(
             models_proxy, db, uid, password, 'purchase.order.line'
         )
+
+        # Búsqueda de moneda remota (ej. USD)
+        currency_id_remoto = False
+        if self.currency_id:
+            try:
+                curr_ids = models_proxy.execute_kw(
+                    db, uid, password, 'res.currency', 'search',
+                    [[('name', '=', self.currency_id.name)]], {'limit': 1}
+                )
+                if curr_ids:
+                    currency_id_remoto = curr_ids[0]
+                    _logger.info("Moneda remota '%s' encontrada: ID %s", self.currency_id.name, currency_id_remoto)
+            except Exception as e:
+                _logger.warning("Error buscando moneda remota '%s': %s", self.currency_id.name, e)
 
         # ✅ NUEVO: Obtener el ID remoto del término de pago (si existe)
         payment_term_id_remoto = False
@@ -70,11 +87,6 @@ class PurchaseOrder(models.Model):
                 default_price=line_price_usd,
             )
 
-            # ✅ ACTUALIZADA: Sincronizar precio USD original en ref_unit
-            # Si currency_id es USD:
-            #   - ref_unit = price_unit (USD original, para cálculo posterior en destino)
-            #   - price_unit = price_unit_bs si existe, si no se usa price_unit directamente
-            # Si no es USD: comportamiento normal (sin ref_unit)
             line_vals = {
                 'product_id': product_id_remoto,
                 'name': line.name,
@@ -83,11 +95,10 @@ class PurchaseOrder(models.Model):
             }
 
             if self.currency_id.name == 'USD':
-                # Enviar precio original en USD en ref_unit
-                line_vals['ref_unit'] = line.price_unit
-                # Usar price_unit_bs si existe, si no usar price_unit como fallback
-                price_unit_bs = getattr(line, 'price_unit_bs', None)
-                line_vals['price_unit'] = price_unit_bs if price_unit_bs is not None else line.price_unit
+                # Enviar precio en USD como price_unit
+                line_vals['price_unit'] = line.price_unit
+                if 'ref_unit' in line_remote_fields:
+                    line_vals['ref_unit'] = line.price_unit
             else:
                 # Comportamiento normal para otras monedas
                 line_vals['price_unit'] = line.price_unit
@@ -135,8 +146,12 @@ class PurchaseOrder(models.Model):
         # ✅ Agregar payment_term_id para cálculo correcto de date_maturity
         if payment_term_id_remoto:
             return_vals['payment_term_id'] = payment_term_id_remoto
-        
-        return return_vals
+
+        # ✅ Agregar moneda remota para mantener la compra en la divisa original (ej. USD)
+        if currency_id_remoto and 'currency_id' in order_remote_fields:
+            return_vals['currency_id'] = currency_id_remoto
+
+        return self._filter_remote_vals(return_vals, order_remote_fields)
 
     def action_send_to_homologado(self):
         """Prepara los datos y llama al método genérico con las acciones de Compra."""
